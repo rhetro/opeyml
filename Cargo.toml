@@ -1,0 +1,21 @@
+[package]
+name = "opeyml"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rhetro <rhetro@rhetroxc.com>"]
+description = "A declarative, zero-overhead YAML surgery DSL for Rust."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rhetro/opeyml"
+readme = "README.md"
+keywords = ["yaml", "macro", "dsl", "serde_yaml", "auto-vivification"]
+categories = ["data-structures", "parsing"]
+
+[dependencies]
+serde_yaml = "0.9"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "opeyml_bench"
+harness = false

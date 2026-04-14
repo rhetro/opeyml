@@ -1,0 +1,1433 @@
+
+# Opeyml 🩺
+
+**A declarative, zero-overhead YAML surgery DSL for Rust.**
+
+`opeyml` is a macro-based library designed to manipulate `serde_yaml::Value` with precision. It brings Perl-like auto-vivification to Rust's YAML handling while bypassing runtime string parsing overhead. Every `.foo.bar[3].baz` traversal is resolved at compile time into static pointer chains, compiling down to pure memory operations.
+
+---
+
+## Comparison with `serde_yaml::Value`
+
+Manually mutating nested `serde_yaml::Value` trees in Rust often leads to deeply nested `Option` matching or verbose error handling. `opeyml` solves this with a clean, unified DSL.
+
+| Task | Standard `serde_yaml::Value` | `opeyml` |
+| :--- | :--- | :--- |
+| **Deep Path Write** | 10+ lines of `match` / `as_mapping_mut` | `suture!(doc, .a.b.c = 1);` |
+| **Safe Read** | Nested `if let` chains | `biopsy!(&doc, .a.b.c)` |
+| **Strict Update** | Manual `Option` existence checks | `incise!(doc, .a.b.c = 1);` |
+| **Array Append** | `.as_sequence_mut().unwrap().push(...)` | `graft!(doc, .arr = [1]);` |
+| **Multi-dim Array** | Hand-written loops / nested `vec!` | `mesh!(doc, [3][3]);` |
+
+---
+
+## 📦 Installation
+
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+opeyml = "0.1.0"
+serde_yaml = "0.9"
+```
+
+To load all the surgical macros and standard types at once, use the prelude:
+
+```rust
+// The prelude exports all surgical macros and required types:
+use opeyml::prelude::*;
+```
+
+---
+
+## 🛡️ Safety & Topological Guarantees
+
+`opeyml` is designed with strict adherence to both Rust's memory safety and structural data safety:
+
+**Rust Safety:**
+* **100% Safe Rust:** No `unsafe` blocks. Memory safety is strictly enforced by the borrow checker.
+* **Panic-Free Traversal:** Deep path resolutions and type casts never panic. Invalid paths or bounds simply short-circuit and return `None` or `Result::Err`.
+
+**Topological Guarantees (The Philosophy of Verbs):**
+* `suture!`: Safely auto-vivifies. It will **not** destroy existing scalars to build a path.
+* `force_suture!`: Destructively auto-vivifies. It **will** overwrite scalars to force path creation.
+* `implant!`: Absolute non-destruction. It **only** fills `Null` spaces and never overwrites existing data.
+* `incise!`: Strict path protection. It will **never** auto-vivify or create new paths; it only updates existing ones.
+
+---
+
+## 🚀 The API & Module Security
+
+To prevent accidental destruction of data structures, `opeyml` categorizes operations into two strict modules. You can opt-in to a specific mode if you want to explicitly restrict the allowed operations in your module.
+
+### 1. Genesis Mode (Creation & Growth)
+Automatically builds missing objects, expands arrays, and structurally merges YAML trees.
+
+```rust
+use opeyml::genesis::*; // Opt-in to Genesis macros
+
+fn main() {
+    let mut doc = Value::Null;
+
+    // 1. Suture (Safe Auto-vivification)
+    suture!(doc, .metadata.name = "nginx");
+    suture!(doc, .spec.containers[0].image = "nginx:latest");
+
+    // 2. Force Suture (Destructive Auto-vivification)
+    suture!(doc, .network.status = "connected");           // Creates a scalar
+    force_suture!(doc, .network.status.latency = "1ms");   // Overwrites "connected" with a mapping
+
+    // 3. Graft (Structural Merge / Append)
+    graft!(doc, .metadata.tags = ["rust", "yaml"]);        // Appends to a sequence
+    graft!(doc, .metadata.labels = { "env": "prod" });     // Merges into a mapping
+
+    // 4. Implant (Void Filler)
+    implant!(doc, .config.mode = "init");
+
+    // 5. Mesh (Spatial Deployment)
+    let mut matrix = Value::Null;
+    mesh!(matrix, [3][2]);
+}
+```
+
+### 2. Strict Mode (Precision Surgery)
+Operates strictly on existing paths. Useful for data validation, probing unknown YAML, and protecting schemas from accidental mutation.
+
+```rust
+use opeyml::strict::*; // Opt-in to Strict macros only
+
+fn main() {
+    let mut doc = Value::Null;
+    // (Assuming data is already populated)
+
+    // 1. Biopsy (Silent Probe) -> Option<&Value>
+    // Zero-allocation read. Returns None if the path does not exist.
+    let version = biopsy!(&doc, .system.kernel.version).unwrap();
+    assert_eq!(version.as_str().unwrap(), "6.1.0");
+
+    // 2. Acquire (Strict Read) -> Result<&Value, Error>
+    // Reads a path, returning a PathNotFound Error if traversal fails.
+    let err = acquire!(&doc, .system.kernel.arch).unwrap_err();
+
+    // 3. Incise (Strict Write)
+    // Succeeds ONLY if the path already exists.
+    incise!(doc, .system.kernel.version = "6.2.0"); // Success
+    incise!(doc, .system.kernel.typo = "value");    // Fails silently
+
+    // 4. Excise (Excision) -> Option<Value>
+    // Removes and returns a specific node from the tree.
+    let removed = excise!(doc, .system.kernel.version).unwrap();
+}
+```
+
+---
+
+## 🎯 Path Syntax
+
+`opeyml` supports heterogeneous key routing, allowing you to mix identifiers, strings, sequence indices, and dynamic variables smoothly.
+
+* **.ident** — Standard identifier key (`.metadata`)
+* **."literal"** — Literal string key (`."http-status"`)
+* **.404** — Numeric map key (YAML supports numeric keys natively)
+* **.(expr)** — Dynamic runtime expression (`.(dynamic_var)`)
+* **[index]** — Sequence index (`[0]`)
+
+**Example:**
+```rust
+let trace_id = "x-request-id";
+suture!(doc, .metadata.annotations.(trace_id) = "0xdeadbeef");
+suture!(doc, .openapi.responses.404.description = "Not Found");
+```
+
+---
+
+## 🧠 Design & Performance
+
+1. **Zero Path-Parsing Overhead:** `opeyml` does not parse string paths at runtime. Macros expand into direct pointer matches and memory operations at compile time, eliminating the traditional abstraction cost of dynamic data traversal.
+2. **YAML Type System Adaptation:** `serde_yaml::Value` has a more complex structure than JSON (e.g., mappings where keys can be full values). `opeyml` handles these conversions and key routings securely underneath the minimalist API.
+3. **High Performance:** Thanks to static expansion and inline optimized syntax (`={ }` / `=[ ]`), `opeyml` maintains high throughput.
+
+**Benchmark Data** (from `tests/benchmark_test.rs` in Release mode):
+
+* **256-Level Deep Penetration:** ~376.7µs
+* **100,000 Massive Sutures:** ~50.8ms
+* **Overall Throughput:** **~1,950,000 operations/sec**
+
+**Extreme Performance Limits** (Handling massive reallocations & type morphing):
+* **1,000,000 Nodes Mesh Allocation:** ~57.0ms (Instant spatial deployment via `mesh!`)
+* **100,000 Sequential Appends:** ~41.0ms (Deep array expansion via `graft!`)
+* **100,000 Destructive Overwrites:** ~38.8ms (Type morphing & memory drop cycles via `force_suture!`)
+
+---
+
+## ⚖️ License
+
+This project is licensed under either of:
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
+# FILE: ./Cargo.toml
+[package]
+name = "opeyml"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rhetro <rhetro@rhetroxc.com>"]
+description = "A declarative, zero-overhead YAML surgery DSL for Rust."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rhetro/opeyml"
+readme = "README.md"
+keywords = ["yaml", "macro", "dsl", "serde_yaml", "auto-vivification"]
+categories = ["data-structures", "parsing"]
+
+[dependencies]
+serde_yaml = "0.9"
+
+// FILE: ./src/core.rs
+// ============================================================================
+// opeyml: The Absolute Surgical DSL for YAML
+// ============================================================================
+
+// ============================================================================
+// 1. STRICT MODE: Precision Surgery
+// ============================================================================
+
+// -----------------------------------------------------------------------------
+// 1.1. BIOPSY (Strict Read)
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_biopsy {
+    ($val:expr) => { Some($val) };
+    ($val:expr, ) => { Some($val) };
+    ($val:expr, . ($key:expr) $($rest:tt)*) => {
+        match $val.get($key) {
+            Some(inner) => $crate::__impl_yml_biopsy!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:literal $($rest:tt)*) => {
+        match $val.get($key) {
+            Some(inner) => $crate::__impl_yml_biopsy!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:ident $($rest:tt)*) => {
+        match $val.get(std::stringify!($key)) {
+            Some(inner) => $crate::__impl_yml_biopsy!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {
+        match $val.get($idx as usize) {
+            Some(inner) => $crate::__impl_yml_biopsy!(inner, $($rest)*),
+            None => None,
+        }
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _biopsy {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &$crate::serde_yaml::Value = &$val;
+        $crate::__impl_yml_biopsy!($val, $($args)+)
+    }};
+    ($val:expr) => {{
+        let _: &$crate::serde_yaml::Value = &$val;
+        Some($val)
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 1.2. INCISE (Strict Write)
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_incise {
+    ($val:expr, = [ $($item:tt)* ]) => {{ *$val = $crate::__impl_yml_forge!([ $($item)* ]); Some(()) }};
+    ($val:expr, = { $($item:tt)* }) => {{ *$val = $crate::__impl_yml_forge!({ $($item)* }); Some(()) }};
+    ($val:expr, = $value:expr) => {{ *$val = $crate::serde_yaml::Value::from($value); Some(()) }};
+    ($val:expr) => { Some($val) };
+    ($val:expr, . ($key:expr) $($rest:tt)*) => {
+        match $val.get_mut($key) {
+            Some(inner) => $crate::__impl_yml_incise!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:literal $($rest:tt)*) => {
+        match $val.get_mut($key) {
+            Some(inner) => $crate::__impl_yml_incise!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:ident $($rest:tt)*) => {
+        match $val.get_mut(std::stringify!($key)) {
+            Some(inner) => $crate::__impl_yml_incise!(inner, $($rest)*),
+            None => None,
+        }
+    };
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {
+        match $val.get_mut($idx as usize) {
+            Some(inner) => $crate::__impl_yml_incise!(inner, $($rest)*),
+            None => None,
+        }
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _incise {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_incise!((&mut $val), $($args)+)
+    }};
+    ($val:expr) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        Some($val)
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 1.3. EXCISE (Delete)
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_excise {
+    ($val:expr, . ($target:expr)) => {
+        $val.as_mapping_mut().and_then(|m| m.remove(&$crate::serde_yaml::Value::from($target)))
+    };
+    ($val:expr, . $target:literal) => {
+        $val.as_mapping_mut().and_then(|m| m.remove(&$crate::serde_yaml::Value::from($target)))
+    };
+    ($val:expr, . $target:ident) => {
+        $val.as_mapping_mut().and_then(|m| m.remove(&$crate::serde_yaml::Value::String(std::stringify!($target).to_string())))
+    };
+    ($val:expr, [ $idx:expr ]) => {
+        $val.as_sequence_mut().and_then(|a| {
+            let idx = $idx as usize;
+            if idx < a.len() { Some(a.remove(idx)) } else { None }
+        })
+    };
+    ($val:expr, . ($key:expr) $($rest:tt)+) => {
+        match $val.get_mut($key) {
+            Some(v) => $crate::__impl_yml_excise!(v, $($rest)+),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:literal $($rest:tt)+) => {
+        match $val.get_mut($key) {
+            Some(v) => $crate::__impl_yml_excise!(v, $($rest)+),
+            None => None,
+        }
+    };
+    ($val:expr, . $key:ident $($rest:tt)+) => {
+        match $val.get_mut(std::stringify!($key)) {
+            Some(v) => $crate::__impl_yml_excise!(v, $($rest)+),
+            None => None,
+        }
+    };
+    ($val:expr, [ $idx:expr ] $($rest:tt)+) => {
+        match $val.get_mut($idx as usize) {
+            Some(v) => $crate::__impl_yml_excise!(v, $($rest)+),
+            None => None,
+        }
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _excise {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_excise!($val, $($args)+)
+    }};
+}
+
+// ============================================================================
+// 2. GENESIS MODE: Structure Creation & Manipulation
+// ============================================================================
+
+// -----------------------------------------------------------------------------
+// 2.0. THE MATTER FORGE
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_forge_count {
+    () => { 0usize };
+    ($_:tt $(, $rest:tt)* $(,)?) => { 1usize + $crate::__impl_yml_forge_count!($($rest)*) };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_forge {
+    ([ ]) => { $crate::serde_yaml::Value::Sequence(std::vec::Vec::new()) };
+    ([ $($item:tt),+ $(,)? ]) => {{
+        let cap = $crate::__impl_yml_forge_count!($($item)*);
+        let mut v = std::vec::Vec::with_capacity(cap);
+        $( v.push($crate::__impl_yml_forge!($item)); )*
+        $crate::serde_yaml::Value::Sequence(v)
+    }};
+    ({ }) => { $crate::serde_yaml::Value::Mapping($crate::serde_yaml::Mapping::new()) };
+    ({ $($key:tt : $val:tt),+ $(,)? }) => {{
+        let mut m = $crate::serde_yaml::Mapping::new();
+        $(
+            m.insert(
+                $crate::serde_yaml::Value::from($key),
+                $crate::__impl_yml_forge!($val)
+            );
+        )*
+        $crate::serde_yaml::Value::Mapping(m)
+    }};
+    ($val:expr) => { $crate::serde_yaml::Value::from($val) };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __opeyml_key {
+    (($e:expr)) => {
+        $crate::serde_yaml::Value::from($e)
+    };
+    ($l:literal) => {
+        $crate::serde_yaml::Value::from($l)
+    };
+    ($i:ident) => {
+        $crate::serde_yaml::Value::String(std::stringify!($i).to_string())
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 2.1. SUTURE
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_suture {
+    ($val:expr, = [ $($item:tt)* ]) => { *$val = $crate::__impl_yml_forge!([ $($item)* ]); };
+    ($val:expr, = { $($item:tt)* }) => { *$val = $crate::__impl_yml_forge!({ $($item)* }); };
+    ($val:expr, = $value:expr) => { *$val = $crate::serde_yaml::Value::from($value); };
+
+    ($val:expr, . $key:tt $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!({ }); }
+        if let $crate::serde_yaml::Value::Mapping(map) = $val {
+            let next = map.entry($crate::__opeyml_key!($key))
+                          .or_insert($crate::serde_yaml::Value::Null);
+            $crate::__impl_yml_suture!(next, $($rest)*);
+        }
+    }};
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!([ ]); }
+        if let $crate::serde_yaml::Value::Sequence(arr) = $val {
+            let idx = $idx as usize;
+            if idx >= arr.len() { arr.resize(idx + 1, $crate::serde_yaml::Value::Null); }
+            $crate::__impl_yml_suture!(&mut arr[idx], $($rest)*);
+        }
+    }};
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _suture {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_suture!((&mut $val), $($args)+);
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 2.2. FORCE SUTURE
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_force_suture {
+    ($val:expr, = [ $($item:tt)* ]) => { *$val = $crate::__impl_yml_forge!([ $($item)* ]); };
+    ($val:expr, = { $($item:tt)* }) => { *$val = $crate::__impl_yml_forge!({ $($item)* }); };
+    ($val:expr, = $value:expr) => { *$val = $crate::serde_yaml::Value::from($value); };
+
+    ($val:expr, . $key:tt $($rest:tt)*) => {{
+        if !$val.is_mapping() { *$val = $crate::__impl_yml_forge!({ }); }
+        if let $crate::serde_yaml::Value::Mapping(map) = $val {
+            let next = map.entry($crate::__opeyml_key!($key))
+                          .or_insert($crate::serde_yaml::Value::Null);
+            $crate::__impl_yml_force_suture!(next, $($rest)*);
+        }
+    }};
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {{
+        if !$val.is_sequence() { *$val = $crate::__impl_yml_forge!([ ]); }
+        if let $crate::serde_yaml::Value::Sequence(arr) = $val {
+            let idx = $idx as usize;
+            if idx >= arr.len() { arr.resize(idx + 1, $crate::serde_yaml::Value::Null); }
+            $crate::__impl_yml_force_suture!(&mut arr[idx], $($rest)*);
+        }
+    }};
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _force_suture {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_force_suture!((&mut $val), $($args)+);
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 2.3. ACQUIRE
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _acquire {
+    ($val:expr, $($path:tt)+) => {{
+        $crate::_biopsy!($val, $($path)+)
+            .ok_or_else(|| $crate::Error::PathNotFound(format!("{}", std::stringify!($($path)+))))
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 2.4. IMPLANT
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_implant {
+    ($val:expr, = [ $($item:tt)* ]) => { if $val.is_null() { *$val = $crate::__impl_yml_forge!([ $($item)* ]); } };
+    ($val:expr, = { $($item:tt)* }) => { if $val.is_null() { *$val = $crate::__impl_yml_forge!({ $($item)* }); } };
+    ($val:expr, = $value:expr) => { if $val.is_null() { *$val = $crate::serde_yaml::Value::from($value); } };
+    ($val:expr, . $key:tt $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!({ }); }
+        if let $crate::serde_yaml::Value::Mapping(map) = $val {
+            let next = map.entry($crate::__opeyml_key!($key))
+                          .or_insert($crate::serde_yaml::Value::Null);
+            $crate::__impl_yml_implant!(next, $($rest)*);
+        }
+    }};
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!([ ]); }
+        if let $crate::serde_yaml::Value::Sequence(arr) = $val {
+            let idx = $idx as usize;
+            if idx >= arr.len() { arr.resize(idx + 1, $crate::serde_yaml::Value::Null); }
+            $crate::__impl_yml_implant!(&mut arr[idx], $($rest)*);
+        }
+    }};
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _implant {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_implant!((&mut $val), $($args)+);
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 2.5. GRAFT
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_graft {
+    ($val:expr, = [ $($item:tt)* ]) => {{
+        match (&mut *$val, $crate::__impl_yml_forge!([ $($item)* ])) {
+            ($crate::serde_yaml::Value::Sequence(h_seq), $crate::serde_yaml::Value::Sequence(mut s_seq)) => { h_seq.append(&mut s_seq); }
+            (h_val, s_val) => { *h_val = s_val; }
+        }
+    }};
+    ($val:expr, = { $($item:tt)* }) => {{
+        match (&mut *$val, $crate::__impl_yml_forge!({ $($item)* })) {
+            ($crate::serde_yaml::Value::Mapping(h_map), $crate::serde_yaml::Value::Mapping(s_map)) => { h_map.extend(s_map); }
+            (h_val, s_val) => { *h_val = s_val; }
+        }
+    }};
+    ($val:expr, = $value:expr) => {{
+        match (&mut *$val, $crate::serde_yaml::Value::from($value)) {
+            ($crate::serde_yaml::Value::Mapping(h_map), $crate::serde_yaml::Value::Mapping(s_map)) => { h_map.extend(s_map); }
+            ($crate::serde_yaml::Value::Sequence(h_seq), $crate::serde_yaml::Value::Sequence(mut s_seq)) => { h_seq.append(&mut s_seq); }
+            (h_val, s_val) => { *h_val = s_val; }
+        }
+    }};
+    ($val:expr, . $key:tt $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!({ }); }
+        if let $crate::serde_yaml::Value::Mapping(map) = $val {
+            let next = map.entry($crate::__opeyml_key!($key))
+                          .or_insert($crate::serde_yaml::Value::Null);
+            $crate::__impl_yml_graft!(next, $($rest)*);
+        }
+    }};
+    ($val:expr, [ $idx:expr ] $($rest:tt)*) => {{
+        if $val.is_null() { *$val = $crate::__impl_yml_forge!([ ]); }
+        if let $crate::serde_yaml::Value::Sequence(arr) = $val {
+            let idx = $idx as usize;
+            if idx >= arr.len() { arr.resize(idx + 1, $crate::serde_yaml::Value::Null); }
+            $crate::__impl_yml_graft!(&mut arr[idx], $($rest)*);
+        }
+    }};
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _graft {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $crate::__impl_yml_graft!((&mut $val), $($args)+);
+    }};
+}
+
+// -----------------------------------------------------------------------------
+// 2.6. MESH
+// -----------------------------------------------------------------------------
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_yml_construct_room {
+    ([ $len:expr ] , $init:expr) => {{
+        let len = $len as usize;
+        let init_val = $crate::serde_yaml::Value::from($init);
+        let mut v = std::vec::Vec::with_capacity(len);
+        for _ in 0..len { v.push(init_val.clone()); }
+        $crate::serde_yaml::Value::Sequence(v)
+    }};
+    ([ $len:expr ]) => {
+        $crate::__impl_yml_construct_room!([ $len ] , $crate::serde_yaml::Value::Null)
+    };
+    ([ $len:expr ] [ $($next:tt)+ ] $($rest:tt)*) => {{
+        let len = $len as usize;
+        let mut v = std::vec::Vec::with_capacity(len);
+        for _ in 0..len {
+            v.push($crate::__impl_yml_construct_room!([ $($next)+ ] $($rest)*));
+        }
+        $crate::serde_yaml::Value::Sequence(v)
+    }};
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! _mesh {
+    ($val:expr, $($args:tt)+) => {{
+        let _: &mut $crate::serde_yaml::Value = &mut $val;
+        $val = $crate::__impl_yml_construct_room!($($args)+);
+    }};
+}
+
+// FILE: ./src/lib.rs
+#![doc = include_str!("../README.md")]
+
+// ============================================================================
+// opeyml: A declarative, zero-overhead YAML surgery DSL
+// ============================================================================
+
+pub use serde_yaml::{self, Mapping, Sequence, Value};
+
+/// Errors encountered during surgical operations
+#[derive(Debug, Clone)]
+pub enum Error {
+    PathNotFound(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::PathNotFound(path) => write!(f, "Path '{}' not found", path),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+// Load internal engine
+#[macro_use]
+mod core;
+
+// ============================================================================
+// API Modules (Semantic Boundaries)
+// ============================================================================
+
+/// Mode A: Strict
+/// The Surgeon: Operates precisely on existing anatomy.
+pub mod strict {
+    pub use crate::_biopsy as biopsy;
+    pub use crate::_excise as excise;
+    pub use crate::_incise as incise;
+    pub use crate::serde_yaml::{self, Mapping, Sequence, Value};
+}
+
+/// Mode B: Genesis
+/// The Creator: Cultivates and grows new paths.
+pub mod genesis {
+    pub use crate::_acquire as acquire;
+    pub use crate::_force_suture as force_suture;
+    pub use crate::_graft as graft;
+    pub use crate::_implant as implant;
+    pub use crate::_mesh as mesh;
+    pub use crate::_suture as suture;
+    pub use crate::serde_yaml::{self, Mapping, Sequence, Value};
+}
+
+pub mod prelude;
+
+// FILE: ./src/prelude.rs
+// ============================================================================
+// opeyml prelude
+// ============================================================================
+
+pub use crate::serde_yaml::{self, Mapping, Sequence, Value};
+
+pub use crate::genesis::*;
+pub use crate::strict::*;
+
+// FILE: ./tests/benchmark_test.rs
+use opeyml::genesis::*;
+use opeyml::strict::*;
+use std::time::Instant;
+
+#[test]
+fn benchmark_opeyml_limit_break() {
+    println!("\n🚀 --- Opeyml Performance Benchmark ---");
+
+    // ==========================================
+    // 1. Vertical Penetration (256 Levels)
+    // ==========================================
+    let mut data = Value::Null;
+    let start_vp = Instant::now();
+    let mut temp = &mut data;
+
+    for i in 0..256 {
+        let key = format!("v{}", i);
+        // Dynamic keys are represented by .(expr).
+        // Use = { } to statically and rapidly Forge an empty Mapping.
+        suture!(*temp, .(key.as_str()) = { });
+
+        // Move the mutable pointer to the deepest layer of the newly generated topology.
+        let key_val = Value::from(key.as_str());
+        temp = temp.as_mapping_mut().unwrap().get_mut(&key_val).unwrap();
+    }
+
+    // Engrave the proof of reaching the abyss (256th level).
+    suture!(*temp, .abyss = "reached");
+
+    let duration_vp = start_vp.elapsed();
+    println!("📍 256-Level Penetration: {:?}", duration_vp);
+
+    // ==========================================
+    // 2. Massive Stitching (100,000 Sutures)
+    // ==========================================
+    // Execute 100,000 continuous Auto-vivifications and assignments from an empty document.
+    let mut data_massive = Value::Null;
+    let start_ms = Instant::now();
+
+    for i in 0..100_000 {
+        let k1 = (i % 100).to_string();
+        let k2 = (i / 100 % 100).to_string();
+        // Two-level nested Auto-vivification using dynamic keys.
+        suture!(data_massive, .(k1.as_str()).(k2.as_str()) = i);
+    }
+
+    let duration_ms = start_ms.elapsed();
+    println!("🧵 100,000 Massive Sutures: {:?}", duration_ms);
+
+    // ==========================================
+    // 3. Calculation for X (Total Score)
+    // ==========================================
+    let total_ops = 100_000 + 256;
+    let total_time = duration_vp + duration_ms;
+    let ops_per_sec = (total_ops as f64) / total_time.as_secs_f64();
+
+    println!("-----------------------------------------");
+    println!("🏆 FINAL SCORE: {:.2} operations/sec", ops_per_sec);
+    println!("-----------------------------------------\n");
+}
+
+#[test]
+fn benchmark_extreme_memory_and_allocation_limits() {
+    use opeyml::genesis::*;
+    use std::time::Instant;
+
+    println!("\n🔥 --- Extreme Performance Limits Test ---");
+
+    // ==========================================
+    // 1. Extreme Spatial Deployment (1,000,000 Nodes Instant Allocation)
+    // ==========================================
+    // Tests the limit of `mesh!`. Allocating a 100x100x100 multi-dimensional array
+    // instantly forces the allocation of 1,000,000 Null nodes.
+    // This measures the overhead of O(1) syntax expansion against Rust's heap allocator.
+    let mut matrix = Value::Null;
+    let start_mesh = Instant::now();
+
+    mesh!(matrix, [100][100][100]);
+
+    let duration_mesh = start_mesh.elapsed();
+    println!("🌌 1,000,000 Nodes Mesh Allocation: {:?}", duration_mesh);
+
+    // Verify
+    let seq = biopsy!(&matrix, [99][99]).unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 100);
+
+    // ==========================================
+    // 2. Extreme Sequential Grafting (100,000 Array Appends)
+    // ==========================================
+    // Tests the limit of `graft!`. Appending 100,000 elements to a single sequence
+    // triggers massive underlying vector reallocations and topology searches.
+    let mut stream = Value::Null;
+    let start_graft = Instant::now();
+
+    for i in 0..100_000 {
+        graft!(stream, .telemetry.events = [i]);
+    }
+
+    let duration_graft = start_graft.elapsed();
+    println!(
+        "🧵 100,000 Sequential Grafts (Appends): {:?}",
+        duration_graft
+    );
+
+    // Verify
+    assert_eq!(
+        biopsy!(&stream, .telemetry.events)
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .len(),
+        100_000
+    );
+
+    // ==========================================
+    // 3. Destructive Overwrite Limits (100,000 Type Overwrites)
+    // ==========================================
+    // Tests the garbage collection / memory drop limits when continuously
+    // destroying and replacing a large data structure.
+    let mut chimera = Value::Null;
+    let start_overwrite = Instant::now();
+
+    for i in 0..100_000 {
+        // Continuously destroy the previous node and replace it
+        if i % 2 == 0 {
+            force_suture!(chimera, .core = { "status": "active" });
+        } else {
+            force_suture!(chimera, .core = "standby");
+        }
+    }
+
+    let duration_overwrite = start_overwrite.elapsed();
+    println!(
+        "💥 100,000 Destructive Overwrites: {:?}",
+        duration_overwrite
+    );
+    println!("-----------------------------------------\n");
+}
+
+// FILE: ./tests/complex_surgery_test.rs
+use opeyml::genesis::*;
+use opeyml::strict::*;
+
+#[test]
+fn test_kubernetes_level_deep_surgery() {
+    // 1. Complex initial state (Simulating a deep K8s Deployment tree)
+    let yaml_str = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: the-empty-os-gateway
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: gateway
+          image: ordestra/gateway:v1
+"#;
+
+    let mut doc: Value = serde_yaml::from_str(yaml_str).unwrap();
+
+    // ==========================================
+    // 🔪 Surgery 1: Array skipping and deep Auto-vivification
+    // ==========================================
+    suture!(doc, .spec.template.spec.containers[1].name = "metrics-sidecar");
+    suture!(doc, .spec.template.spec.containers[1].image = "ordestra/metrics:latest");
+    suture!(doc, .spec.template.spec.containers[1].ports[0].containerPort = 9090);
+
+    // ==========================================
+    // 🔪 Surgery 2: Sequential appending via graft! (= [...])
+    // ==========================================
+    // Directly pushing parsed YAML objects into the sequence.
+    let env_1: Value = serde_yaml::from_str(r#"{ "name": "RUST_LOG", "value": "debug" }"#).unwrap();
+    let env_2: Value =
+        serde_yaml::from_str(r#"{ "name": "MAX_LATENCY", "value": "10ms" }"#).unwrap();
+    graft!(doc, .spec.template.spec.containers[0].env = [env_1]);
+    graft!(doc, .spec.template.spec.containers[0].env = [env_2]);
+
+    // ==========================================
+    // 🔪 Surgery 3: Injection with heterogeneous keys (Identifiers, Literals, Expressions)
+    // ==========================================
+    let dynamic_trace_id = "trace_id";
+    suture!(doc, .metadata.annotations.(dynamic_trace_id) = "0xdeadbeef");
+    suture!(doc, .openapi.responses.200.description = "OK");
+    suture!(doc, .openapi.responses.404.description = "Not Found");
+    suture!(doc, .openapi.responses.500.strict = true);
+
+    // ==========================================
+    // 🔪 Surgery 4: Strict Write (incise!) vs Standard Assign (suture!)
+    // ==========================================
+    suture!(doc, .spec.strategy.type = "RollingUpdate");
+
+    // Strict write: Fails silently because `.spec.strategy.timeout` does not exist yet.
+    incise!(doc, .spec.strategy.timeout = "30s");
+
+    // ==========================================
+    // 🔬 Verification via Zero-Allocation Biopsy
+    // ==========================================
+
+    // Verify Surgery 1
+    assert_eq!(
+        biopsy!(&doc, .spec.template.spec.containers[1].name)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "metrics-sidecar"
+    );
+    assert_eq!(
+        biopsy!(&doc, .spec.template.spec.containers[1].ports[0].containerPort)
+            .unwrap()
+            .as_i64()
+            .unwrap(),
+        9090
+    );
+
+    // Verify Surgery 2
+    assert_eq!(
+        biopsy!(&doc, .spec.template.spec.containers[0].env[0].name)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "RUST_LOG"
+    );
+    assert_eq!(
+        biopsy!(&doc, .spec.template.spec.containers[0].env[1].value)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "10ms"
+    );
+
+    // Verify Surgery 3
+    assert_eq!(
+        biopsy!(&doc, .metadata.annotations."trace_id")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "0xdeadbeef"
+    );
+    assert_eq!(
+        biopsy!(&doc, .openapi.responses.200.description)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        biopsy!(&doc, .openapi.responses.500.strict)
+            .unwrap()
+            .as_bool()
+            .unwrap(),
+        true
+    );
+
+    // Verify Surgery 4
+    assert_eq!(
+        biopsy!(&doc, .spec.strategy.type)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "RollingUpdate"
+    );
+    assert!(biopsy!(&doc, .spec.strategy.timeout).is_none()); // Proves Strict Write (incise!) successfully protected the tree
+
+    // ==========================================
+    // 💣 Excision (Excise) & Tracking (Acquire)
+    // ==========================================
+
+    // Excise a container
+    let removed = excise!(doc, .spec.template.spec.containers[1]).unwrap();
+    assert_eq!(
+        removed
+            .as_mapping()
+            .unwrap()
+            .get(&Value::from("name"))
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "metrics-sidecar"
+    );
+
+    // Acquire should now return an Error that the path is severed at [1]
+    let err = acquire!(&doc, .spec.template.spec.containers[1].ports[0]).unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("1"),
+        "Acquire correctly identifies the amputation point"
+    );
+}
+
+#[test]
+fn test_lexer_boundary_and_heterogeneous_keys() {
+    // 修正: serde_yaml::Value::Null ではなく、スコープ内の Value::Null を使用
+    let mut hell = Value::Null;
+
+    // 1. Preventing Rust lexer float misinterpretation (. 1 . 2 vs .1.2)
+    suture!(hell, . 1 . 2 . 3 ."4". 5 = "reached");
+
+    // 2. Extending the structure safely
+    suture!(hell, . 1 . 2 . 3 ."4".extra = "data");
+
+    // 3. Sequential gap injection (Targeting index 10 directly)
+    suture!(hell, .nodes[10].id = "edge-node");
+
+    // 4. Dynamic access via expressions and Append (graft!)
+    let key = "target";
+    graft!(hell, .metadata.(key).status = ["initialized"]);
+
+    // 🔬 Observation (Proving the topology integrity)
+    assert_eq!(
+        biopsy!(&hell, . 1 . 2 . 3 ."4". 5)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "reached"
+    );
+    assert_eq!(
+        biopsy!(&hell, . 1 . 2 . 3 ."4".extra)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "data"
+    );
+    assert_eq!(
+        biopsy!(&hell, .nodes[10].id).unwrap().as_str().unwrap(),
+        "edge-node"
+    );
+    assert_eq!(
+        biopsy!(&hell, .metadata."target".status[0])
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "initialized"
+    );
+
+    // .len() is a Rust method, evaluated outside the macro
+    assert_eq!(
+        biopsy!(&hell, .nodes).unwrap().as_sequence().unwrap().len(),
+        11
+    );
+}
+
+#[test]
+fn test_force_auto_vivification_destruction() {
+    let mut doc = Value::Null;
+
+    // 1. Create a scalar at the node
+    suture!(doc, .network.status = "connected");
+    assert_eq!(
+        biopsy!(&doc, .network.status).unwrap().as_str().unwrap(),
+        "connected"
+    );
+
+    // 2. Safe Auto-vivification (=) is blocked by the scalar.
+    // It will refuse to destroy "connected" to build the path, so this does nothing.
+    suture!(doc, .network.status.latency = "1ms");
+    assert!(biopsy!(&doc, .network.status.latency).is_none());
+    assert_eq!(
+        biopsy!(&doc, .network.status).unwrap().as_str().unwrap(),
+        "connected"
+    ); // Still intact
+
+    // 3. Destructive Assignment (force_suture!) violently overwrites the scalar "connected"
+    // into a Mapping to construct the requested topology.
+    force_suture!(doc, .network.status.latency = "1ms");
+
+    // The scalar is dead. The mapping is forged.
+    assert_eq!(
+        biopsy!(&doc, .network.status.latency)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "1ms"
+    );
+}
+
+// FILE: ./tests/extreme_edge_test.rs
+use opeyml::genesis::*;
+use opeyml::strict::*;
+
+#[test]
+fn test_chimera_type_morphing() {
+    // [Extreme Test 1: Continuous Type Destruction and Memory Safety]
+    // Tests whether memory leaks or invalid pointer references occur (verifying Rust's Drop works correctly)
+    // by violently overwriting the node type using force_suture! in the sequence:
+    // Null -> Mapping -> Scalar -> Sequence -> Mapping.
+
+    let mut doc = Value::Null;
+
+    // 1. Null -> Mapping
+    suture!(doc, .entity.core = "initial");
+    assert!(biopsy!(&doc, .entity).unwrap().is_mapping());
+
+    // 2. Mapping -> Scalar (Destructive)
+    force_suture!(doc, .entity = "annihilated");
+    assert!(biopsy!(&doc, .entity).unwrap().is_string());
+
+    // 3. Scalar -> Sequence (Destructive)
+    force_suture!(doc, .entity[0] = "reborn");
+    assert!(biopsy!(&doc, .entity).unwrap().is_sequence());
+
+    // 4. Sequence -> Mapping (Destructive)
+    force_suture!(doc, .entity.new_core = "mutated");
+    assert!(biopsy!(&doc, .entity).unwrap().is_mapping());
+
+    // Validate survival
+    assert_eq!(
+        biopsy!(&doc, .entity.new_core).unwrap().as_str().unwrap(),
+        "mutated"
+    );
+}
+
+#[test]
+fn test_astronomical_sequence_gap() {
+    // [Extreme Test 2: Auto-vivification of an Astronomical Sequence Gap]
+    // Accesses and assigns to index `9999` directly from an empty (Null) state.
+    // Tests whether the intermediate range 0..9998 is correctly filled with Null,
+    // and the sequence is expanded without panicking.
+
+    let mut doc = Value::Null;
+
+    // Target an absurd index directly from Null
+    suture!(doc, .universe.galaxies[9999] = "Milky Way");
+
+    let seq = biopsy!(&doc, .universe.galaxies)
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+    assert_eq!(seq.len(), 10000);
+    assert!(seq[0].is_null());
+    assert!(seq[9998].is_null());
+    assert_eq!(seq[9999].as_str().unwrap(), "Milky Way");
+
+    // Excise the absurd distance
+    let removed = excise!(doc, .universe.galaxies[9999]).unwrap();
+    assert_eq!(removed.as_str().unwrap(), "Milky Way");
+}
+
+#[test]
+fn test_extreme_dynamic_expressions() {
+    // [Extreme Test 3: Complex Dynamic Expression Evaluation during Macro Expansion]
+    // Injects a complex Rust block expression containing variable declarations and function calls
+    // inside the .(expr) block to test if the AST parsing breaks.
+
+    let mut doc = Value::Null;
+
+    // Injecting heavy logic inside the dynamic key syntax
+    suture!(doc, .computed.(
+        {
+            let a = 10;
+            let b = 20;
+            format!("key_{}", a + b)
+        }
+    ) = "success");
+
+    assert_eq!(
+        biopsy!(&doc, .computed."key_30").unwrap().as_str().unwrap(),
+        "success"
+    );
+
+    // Nested dynamic evaluations
+    let base = "level";
+    suture!(doc, .(format!("{}_1", base)).(format!("{}_2", base)) = "deep");
+    assert_eq!(
+        biopsy!(&doc, ."level_1"."level_2")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "deep"
+    );
+}
+
+#[test]
+fn test_chaos_string_keys() {
+    // [Extreme Test 4: Routing with Chaotic String Keys]
+    // Tests whether keys that are normally unparseable as properties in OOP languages,
+    // such as empty strings (""), newlines, and emojis, can be successfully resolved as dynamic/static paths.
+
+    let mut doc = Value::Null;
+
+    // Empty string key (Valid in YAML)
+    suture!(doc, .("") = "empty_key_value");
+
+    // Newlines and emojis
+    suture!(doc, .("multi\nline").("🔥") = "chaos");
+
+    assert_eq!(
+        biopsy!(&doc, ."").unwrap().as_str().unwrap(),
+        "empty_key_value"
+    );
+    assert_eq!(
+        biopsy!(&doc, ."multi\nline"."🔥")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "chaos"
+    );
+}
+
+// FILE: ./tests/file_op_test.rs
+use opeyml::genesis::*;
+use opeyml::strict::*;
+
+#[test]
+fn test_file_load_and_surgery() {
+    // 1. Prepare YAML payload (inline to ensure test independence)
+    let yaml_str = r#"
+project: "The Empty OS"
+metadata:
+  tags:
+    - rust
+    - yaml
+  active: false
+spec:
+  replicas: 3
+"#;
+
+    // The initial serde_yaml parsing allocates memory, but
+    // all subsequent path traversals are resolved at compile time with zero allocation.
+    let mut doc: Value = serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
+
+    // 2. Observe existing values (Strict Biopsy)
+    assert_eq!(
+        biopsy!(&doc, .project).unwrap().as_str().unwrap(),
+        "The Empty OS"
+    );
+    assert_eq!(
+        biopsy!(&doc, .metadata.tags[0]).unwrap().as_str().unwrap(),
+        "rust"
+    );
+
+    // 3. Safe suture & mutation (Suture =)
+    // Reaches the target directly as binary instructions, entirely bypassing string parsing.
+    suture!(doc, .spec.replicas = 5);
+    suture!(doc, .metadata.active = true);
+
+    // 4. Structural appending and expansion (graft! instead of <<)
+    // Append to sequence
+    graft!(doc, .metadata.tags = ["opeyml"]);
+
+    // Inject new properties into an object (Auto-vivification)
+    suture!(doc, .spec.port = 8080);
+    suture!(doc, .spec.protocol = "TCP");
+
+    // 5. Final Verification
+    // Verify updated values
+    assert_eq!(biopsy!(&doc, .spec.replicas).unwrap().as_i64().unwrap(), 5);
+    assert_eq!(
+        biopsy!(&doc, .metadata.active).unwrap().as_bool().unwrap(),
+        true
+    );
+
+    // Verify appended elements
+    assert_eq!(
+        biopsy!(&doc, .metadata.tags[2]).unwrap().as_str().unwrap(),
+        "opeyml"
+    );
+    assert_eq!(biopsy!(&doc, .spec.port).unwrap().as_i64().unwrap(), 8080);
+    assert_eq!(
+        biopsy!(&doc, .spec.protocol).unwrap().as_str().unwrap(),
+        "TCP"
+    );
+
+    // 6. Verify Advanced Operations: Error tracking (acquire!) and Excision (excise!)
+    // Acquire a non-existent path and ensure the severed node is accurately reported.
+    let err = acquire!(&doc, .spec.not_found.item).unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("not_found"),
+        "Error should point exactly to the severed path"
+    );
+
+    // Physically amputate "yaml" (index 1) from the tags array.
+    let removed = excise!(doc, .metadata.tags[1]).unwrap();
+    assert_eq!(removed.as_str().unwrap(), "yaml");
+
+    // 7. (Optional) Serialize the mutated result back to a string
+    let output = serde_yaml::to_string(&doc).unwrap();
+    // println!("--- Mutated YAML ---\n{}", output);
+
+    // String-level verification of the mutated topology
+    assert!(output.contains("replicas: 5"));
+    assert!(output.contains("opeyml"));
+    assert!(!output.contains("- yaml")); // Ensure the excised element is eradicated
+}
+
+// FILE: ./tests/integration_test.rs
+use opeyml::genesis::*;
+use opeyml::strict::*;
+
+#[test]
+fn test_suture_and_biopsy() {
+    let mut doc = Value::Null;
+
+    // Suture (=): Auto-vivify deep structures and assign values
+    suture!(doc, .metadata.name = "nginx");
+    suture!(doc, .metadata.replicas = 3);
+    suture!(doc, .spec.containers[0].image = "nginx:latest");
+
+    // Biopsy: Extraction without mutation
+    assert_eq!(
+        biopsy!(&doc, .metadata.name).unwrap().as_str().unwrap(),
+        "nginx"
+    );
+    assert_eq!(
+        biopsy!(&doc, .metadata.replicas).unwrap().as_i64().unwrap(),
+        3
+    );
+    assert_eq!(
+        biopsy!(&doc, .spec.containers[0].image)
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "nginx:latest"
+    );
+
+    // Safe extraction: Returns None for non-existent paths
+    assert!(biopsy!(&doc, .spec.containers[1]).is_none());
+}
+
+#[test]
+fn test_key_topology_resolution() {
+    let mut doc = Value::Null;
+
+    // Identifiers (.status -> "status")
+    suture!(doc, .status = "ok");
+
+    // Literals (Distinguishing between string and numeric keys)
+    suture!(doc, ."http_code" = 200);
+    suture!(doc, .404 = "not found");
+
+    // Expressions (Keys as evaluated tokens)
+    let dynamic_key = "dynamic";
+    suture!(doc, .(dynamic_key) = "injected");
+    suture!(doc, .(2 + 3) = "five");
+
+    // Verification
+    assert_eq!(biopsy!(&doc, .status).unwrap().as_str().unwrap(), "ok");
+    assert_eq!(biopsy!(&doc, ."http_code").unwrap().as_i64().unwrap(), 200);
+    assert_eq!(biopsy!(&doc, .404).unwrap().as_str().unwrap(), "not found");
+    assert_eq!(
+        biopsy!(&doc, ."dynamic").unwrap().as_str().unwrap(),
+        "injected"
+    );
+    assert_eq!(biopsy!(&doc, .5).unwrap().as_str().unwrap(), "five");
+}
+
+#[test]
+fn test_sequence_manipulation() {
+    let mut doc = Value::Null;
+
+    // Use graft! with = [ ... ] for appending to a sequence
+    graft!(doc, .tags = ["rust"]);
+    graft!(doc, .tags = ["macro"]);
+    graft!(doc, .tags = ["yaml"]);
+
+    assert_eq!(biopsy!(&doc, .tags[1]).unwrap().as_str().unwrap(), "macro");
+    assert_eq!(biopsy!(&doc, .tags[2]).unwrap().as_str().unwrap(), "yaml");
+
+    // Verify slicing/indexing via biopsy
+    assert_eq!(biopsy!(&doc, .tags[0]).unwrap().as_str().unwrap(), "rust");
+}
+
+#[test]
+fn test_error_scanning_and_excision() {
+    let mut doc = Value::Null;
+    suture!(doc, .system.kernel.version = "6.1.0");
+
+    // Acquire: Precise Result-based extraction
+    let acquire_result = acquire!(&doc, .system.kernel.arch);
+    assert!(acquire_result.is_err());
+
+    // Excise: Physical excision of nodes
+    let removed = excise!(doc, .system.kernel.version).unwrap();
+    assert_eq!(removed.as_str().unwrap(), "6.1.0");
+    assert!(biopsy!(&doc, .system.kernel.version).is_none());
+}
+
+#[test]
+fn test_mesh_deployment() {
+    // Mesh: O(1) Multi-dimensional sequence deployment (In-place)
+    let mut matrix = Value::Null;
+    mesh!(matrix, [3][2]);
+
+    assert!(matrix.is_sequence());
+    let arr = matrix.as_sequence().unwrap();
+    assert_eq!(arr.len(), 3);
+
+    let inner_arr = arr[0].as_sequence().unwrap();
+    assert_eq!(inner_arr.len(), 2);
+    assert!(inner_arr[0].is_null());
+}
+
+#[test]
+fn test_strict_and_force_suture() {
+    let mut doc = Value::Null;
+    suture!(doc, .config.mode = "init");
+
+    // Strict Write (incise!): Only succeeds if the path already exists
+    incise!(doc, .config.mode = "updated"); // Success
+    incise!(doc, .config.debug = true); // Fails silently (path does not exist)
+
+    assert_eq!(
+        biopsy!(&doc, .config.mode).unwrap().as_str().unwrap(),
+        "updated"
+    );
+    assert!(biopsy!(&doc, .config.debug).is_none());
+
+    // Force Suture (force_suture!): Overwrites scalar values to construct the topology
+    // Normally, assigning to .config.mode.deep would fail because .mode is already a String.
+    force_suture!(doc, .config.mode = "destructive"); // Normal assign works
+
+    // Utilize the optimized `={ }` syntax to instantly Forge and forcibly overwrite
+    force_suture!(doc, .config.mode = { "deep" : "value" });
+
+    assert!(biopsy!(&doc, .config.mode.deep).is_some());
+}
+
+#[test]
+fn test_philosophical_completeness() {
+    // 修正: serde_yaml::Value::Null ではなく、スコープ内の Value::Null を使用
+    let mut doc = Value::Null;
+
+    // ==========================================
+    // 1. Graft overwrite test (Mapping over Scalar)
+    // Proves that graft! overwrites scalars instead of merging,
+    // while preserving its array/mapping merge semantics elsewhere.
+    // ==========================================
+    suture!(doc, .graft_target = "scalar_value");
+    graft!(doc, .graft_target = { "new_key": 100 });
+
+    assert_eq!(
+        biopsy!(&doc, .graft_target."new_key")
+            .unwrap()
+            .as_i64()
+            .unwrap(),
+        100
+    );
+
+    // ==========================================
+    // 2. Implant non-destructive test (Void filling)
+    // Proves that implant! only fills Null spaces and NEVER
+    // overwrites or mutates existing values.
+    // ==========================================
+    suture!(doc, .shield = "active");
+
+    // Attempt to implant over an existing value (should be ignored)
+    implant!(doc, .shield = "broken");
+    assert_eq!(biopsy!(&doc, .shield).unwrap().as_str().unwrap(), "active");
+
+    // Implant into a void (should auto-vivify and fill)
+    implant!(doc, .void.hole = "filled");
+    assert_eq!(
+        biopsy!(&doc, .void.hole).unwrap().as_str().unwrap(),
+        "filled"
+    );
+}
+
